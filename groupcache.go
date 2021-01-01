@@ -38,6 +38,7 @@ import (
 )
 
 // A Getter loads data for a key.
+//数据获取的接口
 type Getter interface {
 	// Get returns the value identified by key, populating dest.
 	//
@@ -49,6 +50,7 @@ type Getter interface {
 }
 
 // A GetterFunc implements Getter with a function.
+//数据获取的函数，它实现了数据获取接口，也就是从DB获取数据的方法
 type GetterFunc func(ctx context.Context, key string, dest Sink) error
 
 func (f GetterFunc) Get(ctx context.Context, key string, dest Sink) error {
@@ -81,6 +83,7 @@ func GetGroup(name string) *Group {
 // completes.
 //
 // The group name must be unique for each getter.
+//创建一个group  名字，可以缓存的字节数，数据获取函数
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	return newGroup(name, cacheBytes, getter, nil)
 }
@@ -92,7 +95,11 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 	}
 	mu.Lock()
 	defer mu.Unlock()
+
+	//保证初始化一次PeerServer
 	initPeerServerOnce.Do(callInitPeerServer)
+
+	//判断group是否存在，重复存在就会panic
 	if _, dup := groups[name]; dup {
 		panic("duplicate registration of group " + name)
 	}
@@ -103,6 +110,8 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 		cacheBytes: cacheBytes,
 		loadGroup:  &singleflight.Group{},
 	}
+
+	//钩子函数不为nil时，回调
 	if fn := newGroupHook; fn != nil {
 		fn(g)
 	}
@@ -111,10 +120,12 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 }
 
 // newGroupHook, if non-nil, is called right after a new group is created.
+//钩子（回调）函数，当一个group被创建成功之后调用
 var newGroupHook func(*Group)
 
 // RegisterNewGroupHook registers a hook that is run each time
 // a group is created.
+//注册钩子函数
 func RegisterNewGroupHook(fn func(*Group)) {
 	if newGroupHook != nil {
 		panic("RegisterNewGroupHook called more than once")
