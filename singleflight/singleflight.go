@@ -40,9 +40,11 @@ type Group struct {
 // original to complete and receives the same results.
 func (g *Group) Do(key string, fn func() (interface{}, error)) (interface{}, error) {
 	g.mu.Lock()
+	//延时初始化
 	if g.m == nil {
 		g.m = make(map[string]*call)
 	}
+	//并发请求时，相同的key只会有一个call请求，其他的请求都会进入waitGroup排队
 	if c, ok := g.m[key]; ok {
 		g.mu.Unlock()
 		c.wg.Wait()

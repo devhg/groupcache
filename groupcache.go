@@ -111,7 +111,7 @@ func newGroup(name string, cacheBytes int64, getter Getter, peers PeerPicker) *G
 		loadGroup:  &singleflight.Group{},
 	}
 
-	//钩子函数不为nil时，回调
+	//创建group之后的回调函数不为nil时，回调
 	if fn := newGroupHook; fn != nil {
 		fn(g)
 	}
@@ -125,7 +125,7 @@ var newGroupHook func(*Group)
 
 // RegisterNewGroupHook registers a hook that is run each time
 // a group is created.
-//注册钩子函数
+//创建group 后的钩子函数
 func RegisterNewGroupHook(fn func(*Group)) {
 	if newGroupHook != nil {
 		panic("RegisterNewGroupHook called more than once")
@@ -135,6 +135,7 @@ func RegisterNewGroupHook(fn func(*Group)) {
 
 // RegisterServerStart registers a hook that is run when the first
 // group is created.
+//服务开启后的回调函数
 func RegisterServerStart(fn func()) {
 	if initPeerServer != nil {
 		panic("RegisterServerStart called more than once")
@@ -151,10 +152,13 @@ func callInitPeerServer() {
 // A Group is a cache namespace and associated data loaded spread over
 // a group of 1 or more machines.
 type Group struct {
-	name       string
-	getter     Getter
-	peersOnce  sync.Once
-	peers      PeerPicker
+	name      string
+	getter    Getter
+	peersOnce sync.Once
+
+	//节点选择器
+	peers PeerPicker
+	//main+hot cache  最大缓存字节数
 	cacheBytes int64 // limit for sum of mainCache and hotCache size
 
 	// mainCache is a cache of the keys for which this process
@@ -176,6 +180,7 @@ type Group struct {
 	// loadGroup ensures that each key is only fetched once
 	// (either locally or remotely), regardless of the number of
 	// concurrent callers.
+	//无论多少此并发请求，loadGroup保证key只会被请求一次（本地 或 其他节点），
 	loadGroup flightGroup
 
 	_ int32 // force Stats to be 8-byte aligned on 32-bit platforms
@@ -187,12 +192,14 @@ type Group struct {
 // flightGroup is defined as an interface which flightgroup.Group
 // satisfies.  We define this so that we may test with an alternate
 // implementation.
+//并发时 利用flightGroup避免重入，解决缓存击穿，缓存穿透
 type flightGroup interface {
 	// Done is called when Do is done.
 	Do(key string, fn func() (interface{}, error)) (interface{}, error)
 }
 
 // Stats are per-group statistics.
+//group 统计信息
 type Stats struct {
 	Gets           AtomicInt // any Get request, including from peers
 	CacheHits      AtomicInt // either cache was good
@@ -217,15 +224,21 @@ func (g *Group) initPeers() {
 }
 
 func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
+	//保证只会初始化一次 节点选择器
 	g.peersOnce.Do(g.initPeers)
+	//统计：Gets++
 	g.Stats.Gets.Add(1)
+
+	//
 	if dest == nil {
 		return errors.New("groupcache: nil dest Sink")
 	}
+
+	//本地缓存查询
 	value, cacheHit := g.lookupCache(key)
 
 	if cacheHit {
-		g.Stats.CacheHits.Add(1)
+		g.Stats.CacheHits.Add(1) //统计：缓存命中数++
 		return setSinkView(dest, value)
 	}
 
@@ -245,8 +258,12 @@ func (g *Group) Get(ctx context.Context, key string, dest Sink) error {
 }
 
 // load loads key either by invoking the getter locally or by sending it to another machine.
+// 如果其他机器命中，返回其他机器的缓存；否则调用Getter从DB拿取数据并缓存
 func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView, destPopulated bool, err error) {
+	//统计：loads++
 	g.Stats.Loads.Add(1)
+
+	//单次访问，利用闭包特性
 	viewi, err := g.loadGroup.Do(key, func() (interface{}, error) {
 		// Check the cache again because singleflight can only dedup calls
 		// that overlap concurrently.  It's possible for 2 concurrent
@@ -269,6 +286,8 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		// 1: fn()
 		// 2: loadGroup.Do("key", fn)
 		// 2: fn()
+
+		//重新查询本地缓存，因为可能存在两个并发请求导致两次load()调用，
 		if value, cacheHit := g.lookupCache(key); cacheHit {
 			g.Stats.CacheHits.Add(1)
 			return value, nil
@@ -276,7 +295,10 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		g.Stats.LoadsDeduped.Add(1)
 		var value ByteView
 		var err error
+
+		//通过key选择节点，核心算法是 一致性哈希：通过key的hash值，选择到虚拟节点，通过虚拟节点 映射到真实节点
 		if peer, ok := g.peers.PickPeer(key); ok {
+			//找到节点，从节点获取缓存
 			value, err = g.getFromPeer(ctx, peer, key)
 			if err == nil {
 				g.Stats.PeerLoads.Add(1)
@@ -288,6 +310,8 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 			// probably boring (normal task movement), so not
 			// worth logging I imagine.
 		}
+
+		//其他节点也没有，本地DB获取
 		value, err = g.getLocally(ctx, key, dest)
 		if err != nil {
 			g.Stats.LocalLoadErrs.Add(1)
@@ -295,6 +319,7 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 		}
 		g.Stats.LocalLoads.Add(1)
 		destPopulated = true // only one caller of load gets this return value
+		//缓存从DB获取的数据
 		g.populateCache(key, value, &g.mainCache)
 		return value, nil
 	})
@@ -304,6 +329,7 @@ func (g *Group) load(ctx context.Context, key string, dest Sink) (value ByteView
 	return
 }
 
+//利用getter函数（也就是用户提供的进入db的接口），从DB中获取数据
 func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView, error) {
 	err := g.getter.Get(ctx, key, dest)
 	if err != nil {
@@ -312,13 +338,14 @@ func (g *Group) getLocally(ctx context.Context, key string, dest Sink) (ByteView
 	return dest.view()
 }
 
+//从其他节点查询并获取数据
 func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (ByteView, error) {
 	req := &pb.GetRequest{
 		Group: &g.name,
 		Key:   &key,
 	}
 	res := &pb.GetResponse{}
-	err := peer.Get(ctx, req, res)
+	err := peer.Get(ctx, req, res) //rpc 获取数据
 	if err != nil {
 		return ByteView{}, err
 	}
@@ -326,12 +353,14 @@ func (g *Group) getFromPeer(ctx context.Context, peer ProtoGetter, key string) (
 	// TODO(bradfitz): use res.MinuteQps or something smart to
 	// conditionally populate hotCache.  For now just do it some
 	// percentage of the time.
+	//随机缓存到 hotCache
 	if rand.Intn(10) == 0 {
 		g.populateCache(key, value, &g.hotCache)
 	}
 	return value, nil
 }
 
+//查找本地缓存
 func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 	if g.cacheBytes <= 0 {
 		return
@@ -344,6 +373,7 @@ func (g *Group) lookupCache(key string) (value ByteView, ok bool) {
 	return
 }
 
+//添加缓存，可能是hotCache，也可能是mainCache
 func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 	if g.cacheBytes <= 0 {
 		return
@@ -362,6 +392,11 @@ func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 		// It should be something based on measurements and/or
 		// respecting the costs of different resources.
 		victim := &g.mainCache
+
+		//如果mainBytes+hotBytes 大于group的最大缓存数量，进入下面逻辑
+		//如果hotBytes大于mainBytes的八分之一，逐一淘汰最近最久未使用的hotCache；
+		//否则逐一淘汰最近最久未使用的mainCache。
+		//淘汰缓存直到 小于group最大缓存数量
 		if hotBytes > mainBytes/8 {
 			victim = &g.hotCache
 		}
@@ -398,6 +433,7 @@ func (g *Group) CacheStats(which CacheType) CacheStats {
 // cache is a wrapper around an *lru.Cache that adds synchronization,
 // makes values always be ByteView, and counts the size of all keys and
 // values.
+//对 lru.Cache的封装，支持并发，支持统计信息
 type cache struct {
 	mu         sync.RWMutex
 	nbytes     int64 // of all keys and values
@@ -418,11 +454,17 @@ func (c *cache) stats() CacheStats {
 	}
 }
 
+//添加缓存
 func (c *cache) add(key string, value ByteView) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	//延时初始化（lazy initialization）
+	//一个对象的延时初始化意味着将初始化延迟至第一次使用
+	//用于提高性能，减少程序内存使用
 	if c.lru == nil {
 		c.lru = &lru.Cache{
+			//缓存淘汰之后的回调函数
 			OnEvicted: func(key lru.Key, value interface{}) {
 				val := value.(ByteView)
 				c.nbytes -= int64(len(key.(string))) + int64(val.Len())
@@ -434,6 +476,7 @@ func (c *cache) add(key string, value ByteView) {
 	c.nbytes += int64(len(key)) + int64(value.Len())
 }
 
+//获取缓存
 func (c *cache) get(key string) (value ByteView, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -449,6 +492,7 @@ func (c *cache) get(key string) (value ByteView, ok bool) {
 	return vi.(ByteView), true
 }
 
+//删除最近最久未使用
 func (c *cache) removeOldest() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -457,12 +501,14 @@ func (c *cache) removeOldest() {
 	}
 }
 
+//获取已经缓存的字节数
 func (c *cache) bytes() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.nbytes
 }
 
+//缓存key数目
 func (c *cache) items() int64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -494,6 +540,7 @@ func (i *AtomicInt) String() string {
 }
 
 // CacheStats are returned by stats accessors on Group.
+//cache统计信息
 type CacheStats struct {
 	Bytes     int64
 	Items     int64
