@@ -36,10 +36,12 @@ const defaultBasePath = "/_groupcache/"
 const defaultReplicas = 50
 
 // HTTPPool implements PeerPicker for a pool of HTTP peers.
+// HTTPPool 实现了 PeerPicker 接口。实际上是一个http选择器（HttPPool）
 type HTTPPool struct {
 	// Context optionally specifies a context for the server to use when it
 	// receives a request.
 	// If nil, the server uses the request's context
+	// Context 可选的指定了一个上下文，给服务端接收到请求时使用它
 	Context func(*http.Request) context.Context
 
 	// Transport optionally specifies an http.RoundTripper for the client
@@ -51,6 +53,7 @@ type HTTPPool struct {
 	self string
 
 	// opts specifies the options.
+	// opts 制定了配置选项
 	opts HTTPPoolOptions
 
 	mu          sync.Mutex // guards peers and httpGetters

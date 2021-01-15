@@ -29,13 +29,18 @@ import (
 //
 // A ByteView is meant to be used as a value type, not
 // a pointer (like a time.Time).
+
+//ByteView存储了不可变的字节数组和字符串数据，对于调用者来说是不可见的
+//同时只支持实体类型调用，而不支持指针类型（只有值接收器）
 type ByteView struct {
 	// If b is non-nil, b is used, else s is used.
+	//字节数组  字符串 只有一个在使用
 	b []byte
 	s string
 }
 
 // Len returns the view's length.
+//返回字节长度
 func (v ByteView) Len() int {
 	if v.b != nil {
 		return len(v.b)
@@ -44,6 +49,7 @@ func (v ByteView) Len() int {
 }
 
 // ByteSlice returns a copy of the data as a byte slice.
+//返回 存储的字节数组或者字符串的  字节数组副本
 func (v ByteView) ByteSlice() []byte {
 	if v.b != nil {
 		return cloneBytes(v.b)
@@ -52,6 +58,7 @@ func (v ByteView) ByteSlice() []byte {
 }
 
 // String returns the data as a string, making a copy if necessary.
+//返回 存储的字节数组或者字符串的  字符串副本
 func (v ByteView) String() string {
 	if v.b != nil {
 		return string(v.b)
@@ -68,6 +75,7 @@ func (v ByteView) At(i int) byte {
 }
 
 // Slice slices the view between the provided from and to indices.
+//返回 一个ByteView，其中包括原来ByteView的切片
 func (v ByteView) Slice(from, to int) ByteView {
 	if v.b != nil {
 		return ByteView{b: v.b[from:to]}
@@ -84,6 +92,7 @@ func (v ByteView) SliceFrom(from int) ByteView {
 }
 
 // Copy copies b into dest and returns the number of bytes copied.
+//返回 将数据拷贝进 传入的dest字节数组并返回
 func (v ByteView) Copy(dest []byte) int {
 	if v.b != nil {
 		return copy(dest, v.b)

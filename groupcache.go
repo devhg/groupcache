@@ -405,6 +405,7 @@ func (g *Group) populateCache(key string, value ByteView, cache *cache) {
 }
 
 // CacheType represents a type of cache.
+//缓存类型，比如，热点缓存，主缓存
 type CacheType int
 
 const (
@@ -442,6 +443,17 @@ type cache struct {
 	nevict     int64 // number of evictions
 }
 
+// CacheStats are returned by stats accessors on Group.
+//cache统计信息结构体
+type CacheStats struct {
+	Bytes     int64
+	Items     int64
+	Gets      int64
+	Hits      int64
+	Evictions int64
+}
+
+//返回统计信息
 func (c *cache) stats() CacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -515,6 +527,7 @@ func (c *cache) items() int64 {
 	return c.itemsLocked()
 }
 
+//锁内获取key数目的函数
 func (c *cache) itemsLocked() int64 {
 	if c.lru == nil {
 		return 0
@@ -523,6 +536,7 @@ func (c *cache) itemsLocked() int64 {
 }
 
 // An AtomicInt is an int64 to be accessed atomically.
+//并发安全的int64类型（修改，获取）
 type AtomicInt int64
 
 // Add atomically adds n to i.
@@ -537,14 +551,4 @@ func (i *AtomicInt) Get() int64 {
 
 func (i *AtomicInt) String() string {
 	return strconv.FormatInt(i.Get(), 10)
-}
-
-// CacheStats are returned by stats accessors on Group.
-//cache统计信息
-type CacheStats struct {
-	Bytes     int64
-	Items     int64
-	Gets      int64
-	Hits      int64
-	Evictions int64
 }
