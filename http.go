@@ -36,7 +36,7 @@ const defaultBasePath = "/_groupcache/"
 const defaultReplicas = 50
 
 // HTTPPool implements PeerPicker for a pool of HTTP peers.
-// HTTPPool 实现了 PeerPicker 接口。实际上是一个http选择器（HttPPool）
+// HTTPPool 实现了 PeerPicker 接口。实际上是一个节点选择器
 type HTTPPool struct {
 	// Context optionally specifies a context for the server to use when it
 	// receives a request.
